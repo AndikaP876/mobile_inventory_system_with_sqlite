@@ -1,10 +1,9 @@
 import 'dart:io';
-
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // Import Firestore
 import 'package:mobile_inventory_system/screens/add_item_screen.dart';
 import 'package:mobile_inventory_system/screens/detail_item_screen.dart'; // Import DetailItemScreen
-import '../utils/database_helper.dart';
-import '../models/item_model.dart';
 
 class ItemListScreen extends StatefulWidget {
   @override
@@ -12,59 +11,63 @@ class ItemListScreen extends StatefulWidget {
 }
 
 class _ItemListScreenState extends State<ItemListScreen> {
-  late Future<List<Item>> _items;
+  // Referensi koleksi Firestore
+  Stream<QuerySnapshot> getItems() {
+    final String userId = FirebaseAuth.instance.currentUser!.uid;
 
-  @override
-  void initState() {
-    super.initState();
-    _items = DatabaseHelper.instance.fetchItems();
-  }
-
-  // Fungsi untuk mem-fetch ulang daftar item
-  Future<void> _fetchItems() async {
-    setState(() {
-      _items = DatabaseHelper.instance.fetchItems();
-    });
+    return FirebaseFirestore.instance
+        .collection('items')
+        .where('userId', isEqualTo: userId)
+        .snapshots();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Daftar Barang')),
-      body: FutureBuilder<List<Item>>(
-        future: _items,
+      appBar: AppBar(title: const Text('Daftar Barang')),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: getItems(), // Menggunakan Stream untuk pembaruan real-time
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return Center(child: CircularProgressIndicator());
+            return const Center(child: CircularProgressIndicator());
           } else if (snapshot.hasError) {
             return Center(child: Text('Error: ${snapshot.error}'));
-          } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
-            return Center(child: Text('Belum ada barang.'));
+          } else if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(child: Text('Belum ada barang.'));
           } else {
+            // Mengambil daftar dokumen
+            final items = snapshot.data!.docs;
+
             return ListView.builder(
-              itemCount: snapshot.data!.length,
+              itemCount: items.length,
               itemBuilder: (context, index) {
-                final item = snapshot.data![index];
+                // Mengambil data barang dari dokumen
+                final item = items[index];
+                final itemData = item.data() as Map<String, dynamic>;
+
                 return ListTile(
-                  leading: Image.file(File(item.imagePath)),
+                  leading: Image.network(itemData['imageUrl']), 
                   title: Text(
-                    item.name,
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                    itemData['name'],
+                    style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
-                  subtitle:
-                      Text('Kategori: ${item.category}\nStok: ${item.stock}\nHarga: ${item.price}'),
+                  subtitle: Text(
+                    'Kategori: ${itemData['category']}\n'
+                    'Stok: ${itemData['stock']}\n'
+                    'Harga: ${itemData['price']}',
+                  ),
                   onTap: () async {
+                    // Navigasi ke DetailItemScreen dengan data Firestore
                     final result = await Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => DetailItemScreen(item: item),
+                        builder: (context) => DetailItemScreen(
+                          itemId: item.id, // Kirim ID dokumen
+                        ),
                       ),
                     );
                     if (result == true) {
-                      setState(() {
-                        _items = DatabaseHelper.instance
-                            .fetchItems(); // Refresh daftar item
-                      });
+                      setState(() {});
                     }
                   },
                 );
@@ -79,12 +82,12 @@ class _ItemListScreenState extends State<ItemListScreen> {
             context,
             MaterialPageRoute(
               builder: (context) => AddItemScreen(
-                onItemAdded: _fetchItems,
+                onItemAdded: () {}, // Tidak perlu fetch ulang karena Firestore otomatis diperbarui
               ),
             ),
           );
         },
-        child: Icon(Icons.add),
+        child: const Icon(Icons.add),
       ),
     );
   }

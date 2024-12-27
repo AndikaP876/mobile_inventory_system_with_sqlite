@@ -1,14 +1,12 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import '../models/item_model.dart';
-import '../models/transaction_model.dart';
-import '../utils/database_helper.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class AddTransactionScreen extends StatefulWidget {
-  final Item item;
+  final String itemId; // ID barang yang dipilih
+  final String itemName; // ID barang yang dipilih
 
-  const AddTransactionScreen({Key? key, required this.item}) : super(key: key);
+  const AddTransactionScreen({Key? key, required this.itemId, required this.itemName})
+      : super(key: key);
 
   @override
   _AddTransactionScreenState createState() => _AddTransactionScreenState();
@@ -19,22 +17,40 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   String _transactionType = 'in'; // Default transaction type: "Barang Masuk"
   final _quantityController = TextEditingController();
   DateTime _selectedDate = DateTime.now();
-  late int _currentStock; // Stok terkini
+  int _currentStock = 0; // Stok terkini
+  int _stockPreview = 0; // Tambahkan variabel baru untuk stok sementara
 
   @override
   void initState() {
     super.initState();
-    _currentStock = widget.item.stock; // Inisialisasi stok awal
-    _quantityController.addListener(_updateStockPreview);
+    _loadItemData(); // Muat data barang untuk mendapatkan stok terkini
   }
 
+  // Fungsi untuk memuat data barang dari Firestore
+  Future<void> _loadItemData() async {
+    final docSnapshot = await FirebaseFirestore.instance
+        .collection('items')
+        .doc(widget.itemId)
+        .get();
+
+    if (docSnapshot.exists) {
+      final itemData = docSnapshot.data() as Map<String, dynamic>;
+      setState(() {
+        _currentStock =
+            itemData['stock'] ?? 0; // Ambil stok terkini dari Firestore
+        _stockPreview = _currentStock; // Set stok preview awal
+      });
+    }
+  }
+
+  // Fungsi untuk menghitung stok sementara berdasarkan input dan jenis transaksi
   void _updateStockPreview() {
     final quantity = int.tryParse(_quantityController.text) ?? 0;
     setState(() {
       if (_transactionType == 'in') {
-        _currentStock = widget.item.stock + quantity;
+        _stockPreview = _currentStock + quantity; // Tambah untuk barang masuk
       } else if (_transactionType == 'out') {
-        _currentStock = widget.item.stock - quantity;
+        _stockPreview = _currentStock - quantity; // Kurangi untuk barang keluar
       }
     });
   }
@@ -58,34 +74,38 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       final quantity = int.parse(_quantityController.text);
 
       // Validasi stok untuk barang keluar
-      if (_transactionType == 'out' && quantity > widget.item.stock) {
+      if (_transactionType == 'out' && quantity > _currentStock) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Stok tidak mencukupi untuk barang keluar!')),
         );
         return;
       }
 
-      // Simpan transaksi ke database
-      final transactionItem = TransactionItem(
-        itemId: widget.item.id!,
-        type: _transactionType,
-        quantity: quantity,
-        date: _selectedDate.toIso8601String(),
-      );
-      await DatabaseHelper.instance.insertTransaction(transactionItem);
+      // Simpan transaksi ke Firestore
+      final transactionRef =
+          FirebaseFirestore.instance.collection('transactions').doc();
+      await transactionRef.set({
+        'itemId': widget.itemId, // Menyimpan ID item yang terkait
+        'type': _transactionType,
+        'quantity': quantity,
+        'date': _selectedDate,
+      });
 
-      // Update stok barang
+      // Update stok barang di Firestore
       final updatedStock = _transactionType == 'in'
-          ? widget.item.stock + quantity
-          : widget.item.stock - quantity;
-      final updatedItem = widget.item.copyWith(stock: updatedStock);
-      await DatabaseHelper.instance.updateItem(updatedItem);
+          ? _currentStock + quantity
+          : _currentStock - quantity;
+      await FirebaseFirestore.instance
+          .collection('items')
+          .doc(widget.itemId)
+          .update({'stock': updatedStock});
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Riwayat transaksi berhasil disimpan!')),
       );
 
-      Navigator.pop(context, true);
+      Navigator.pop(
+          context, true); // Kembali ke halaman sebelumnya dengan hasil true
     }
   }
 
@@ -111,7 +131,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                 child: ListView(
                   children: [
                     Text(
-                      'Barang: ${widget.item.name}',
+                      'Barang : ${widget.itemName}',
                       style:
                           TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                     ),
@@ -132,11 +152,10 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       onChanged: (value) {
                         setState(() {
                           _transactionType = value!;
-                          _updateStockPreview();
                         });
+                        _updateStockPreview(); // Update stok preview setelah jenis transaksi berubah
                       },
                     ),
-                    const SizedBox(height: 16),
                     TextFormField(
                       controller: _quantityController,
                       decoration: InputDecoration(labelText: 'Jumlah'),
@@ -151,10 +170,12 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                         }
                         return null;
                       },
+                      onChanged: (value) =>
+                          _updateStockPreview(), // Update stok preview setelah jumlah berubah
                     ),
                     const SizedBox(height: 30),
                     Text(
-                      'Stok Setelah Transaksi: $_currentStock',
+                      'Stok Setelah Transaksi: $_stockPreview',
                       style:
                           TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                     ),

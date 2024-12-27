@@ -1,14 +1,14 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import '../utils/database_helper.dart';
-import '../models/item_model.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // Import FirebaseAuth
+import 'dart:io';
 
 class AddItemScreen extends StatefulWidget {
-  final Function() onItemAdded; // Callback function for updating item list
+  final Function() onItemAdded;
 
-  AddItemScreen({required this.onItemAdded});
+  const AddItemScreen({Key? key, required this.onItemAdded}) : super(key: key);
 
   @override
   _AddItemScreenState createState() => _AddItemScreenState();
@@ -22,8 +22,11 @@ class _AddItemScreenState extends State<AddItemScreen> {
 
   File? _image;
   final ImagePicker _picker = ImagePicker();
-  String _category = 'Makanan'; // Default category: Makanan
+  String _category = 'Makanan';
 
+  bool _isLoading = false;
+
+  // Fungsi memilih gambar
   Future<void> _pickImage(ImageSource source) async {
     final pickedFile = await _picker.pickImage(source: source);
     if (pickedFile != null) {
@@ -33,40 +36,77 @@ class _AddItemScreenState extends State<AddItemScreen> {
     }
   }
 
+  // Fungsi unggah gambar
+  Future<String> _uploadImageToFirebase() async {
+    final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final storageRef = FirebaseStorage.instance.ref().child('images/$fileName');
+    final uploadTask = await storageRef.putFile(_image!);
+    final imageUrl = await uploadTask.ref.getDownloadURL();
+    return imageUrl;
+  }
+
+  // Fungsi menyimpan item ke Firestore
   Future<void> _saveItem() async {
     if (_formKey.currentState!.validate()) {
       if (_image == null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Silakan pilih gambar untuk barang!')),
+          const SnackBar(content: Text('Pilih gambar terlebih dahulu!')),
         );
         return;
       }
 
-      final item = Item(
-        name: _nameController.text,
-        description: _descriptionController.text,
-        category: _category,
-        price: double.parse(_priceController.text),
-        imagePath: _image!.path,
-        stock: 0, // Default stock is 0 for new items
-      );
+      setState(() {
+        _isLoading = true;
+      });
 
-      await DatabaseHelper.instance.insertItem(item);
+      try {
+        // Ambil userId dari Firebase Authentication
+        final user = FirebaseAuth.instance.currentUser;
+        if (user == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Anda harus login terlebih dahulu!')),
+          );
+          return;
+        }
+        String userId = user.uid; // Mengambil userId dari user yang login
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Barang berhasil ditambahkan!')),
-      );
+        // Upload gambar ke Firebase Storage
+        String imageUrl = await _uploadImageToFirebase();
 
-      widget.onItemAdded(); // Trigger the callback to update the item list
+        // Simpan data ke Firestore dengan userId
+        await FirebaseFirestore.instance.collection('items').add({
+          'name': _nameController.text,
+          'description': _descriptionController.text,
+          'category': _category,
+          'price': double.parse(_priceController.text),
+          'imageUrl': imageUrl,
+          'stock': 0,
+          'userId': userId, // Tambahkan userId
+          'createdAt': FieldValue.serverTimestamp(),
+        });
 
-      Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Barang berhasil ditambahkan!')),
+        );
+
+        widget.onItemAdded();
+        Navigator.pop(context);
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Gagal menyimpan barang: $e')),
+        );
+      }
+
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Tambah Barang')),
+      appBar: AppBar(title: const Text('Tambah Barang')),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Form(
@@ -78,7 +118,8 @@ class _AddItemScreenState extends State<AddItemScreen> {
                   children: [
                     TextFormField(
                       controller: _nameController,
-                      decoration: InputDecoration(labelText: 'Nama Barang'),
+                      decoration:
+                          const InputDecoration(labelText: 'Nama Barang'),
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Nama barang tidak boleh kosong';
@@ -88,37 +129,27 @@ class _AddItemScreenState extends State<AddItemScreen> {
                     ),
                     TextFormField(
                       controller: _descriptionController,
-                      decoration: InputDecoration(labelText: 'Deskripsi'),
+                      decoration: const InputDecoration(labelText: 'Deskripsi'),
                       maxLines: 3,
                     ),
                     DropdownButtonFormField<String>(
                       value: _category,
-                      decoration: InputDecoration(labelText: 'Kategori'),
-                      items: [
+                      decoration: const InputDecoration(labelText: 'Kategori'),
+                      items: const [
                         DropdownMenuItem(
-                          value: 'Makanan',
-                          child: Text('Makanan'),
-                        ),
+                            value: 'Makanan', child: Text('Makanan')),
                         DropdownMenuItem(
-                          value: 'Minuman',
-                          child: Text('Minuman'),
-                        ),
+                            value: 'Minuman', child: Text('Minuman')),
                       ],
                       onChanged: (value) {
                         setState(() {
                           _category = value!;
                         });
                       },
-                      validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return 'Kategori tidak boleh kosong';
-                        }
-                        return null;
-                      },
                     ),
                     TextFormField(
                       controller: _priceController,
-                      decoration: InputDecoration(labelText: 'Harga'),
+                      decoration: const InputDecoration(labelText: 'Harga'),
                       keyboardType: TextInputType.number,
                       validator: (value) {
                         if (value == null || value.isEmpty) {
@@ -131,27 +162,22 @@ class _AddItemScreenState extends State<AddItemScreen> {
                       },
                     ),
                     const SizedBox(height: 16),
-                    Text(
-                      'Pilih Gambar:',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(
-                        height: 8), // Memberi jarak antara teks dan tombol
+                    const Text('Pilih Gambar:',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
                       children: [
                         ElevatedButton.icon(
                           onPressed: () => _pickImage(ImageSource.camera),
-                          icon: Icon(Icons.camera_alt),
-                          label: Text('Kamera'),
+                          icon: const Icon(Icons.camera_alt),
+                          label: const Text('Kamera'),
                         ),
                         ElevatedButton.icon(
                           onPressed: () => _pickImage(ImageSource.gallery),
-                          icon: Icon(Icons.photo_library),
-                          label: Text('Galeri'),
+                          icon: const Icon(Icons.photo_library),
+                          label: const Text('Galeri'),
                         ),
                       ],
                     ),
@@ -162,19 +188,20 @@ class _AddItemScreenState extends State<AddItemScreen> {
                             height: 200,
                             fit: BoxFit.cover,
                           )
-                        : Text('Belum ada gambar yang dipilih'),
+                        : const Text('Belum ada gambar yang dipilih'),
                   ],
                 ),
               ),
               const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: _saveItem,
-                style: ElevatedButton.styleFrom(
-                  minimumSize: Size(
-                      double.infinity, 50), // Memastikan tombol lebar penuh
-                ),
-                child: Text('Simpan'),
-              ),
+              _isLoading
+                  ? const CircularProgressIndicator()
+                  : ElevatedButton(
+                      onPressed: _saveItem,
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: const Size(double.infinity, 50),
+                      ),
+                      child: const Text('Simpan'),
+                    ),
             ],
           ),
         ),
